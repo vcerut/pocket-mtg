@@ -22,18 +22,21 @@ function parseLine(line: string): ParsedLine | null {
 export interface ParsedDecklist {
   commander: ParsedLine | null
   cards: ParsedLine[]
+  sideboard: ParsedLine[]
 }
 
 /**
- * Parses a plain-text decklist. Recognizes an optional `Commander` / `Deck`
- * section split (case-insensitive); falls back to a flat card list otherwise.
+ * Parses a plain-text decklist. Recognizes optional `Commander` / `Deck` /
+ * `Sideboard` section headers (case-insensitive); falls back to a flat card
+ * list otherwise.
  */
 export function parseDecklistText(text: string): ParsedDecklist {
   const lines = text.split('\n').map((l) => l.trim())
 
-  let section: 'commander' | 'deck' = 'deck'
+  let section: 'commander' | 'deck' | 'sideboard' = 'deck'
   let commander: ParsedLine | null = null
   const cards: ParsedLine[] = []
+  const sideboard: ParsedLine[] = []
 
   for (const raw of lines) {
     if (!raw) continue
@@ -46,22 +49,29 @@ export function parseDecklistText(text: string): ParsedDecklist {
       section = 'deck'
       continue
     }
+    if (lower === 'sideboard') {
+      section = 'sideboard'
+      continue
+    }
 
     const parsed = parseLine(raw)
     if (!parsed) continue
 
     if (section === 'commander') {
       commander = parsed
+    } else if (section === 'sideboard') {
+      sideboard.push(parsed)
     } else {
       cards.push(parsed)
     }
   }
 
-  return { commander, cards }
+  return { commander, cards, sideboard }
 }
 
 export interface ResolvedDecklist {
   cards: DeckCard[]
+  sideboard: DeckCard[]
   commanderId?: string
   notFound: string[]
 }
@@ -70,6 +80,7 @@ export async function resolveDecklist(parsed: ParsedDecklist): Promise<ResolvedD
   const allNames = [
     ...(parsed.commander ? [parsed.commander.name] : []),
     ...parsed.cards.map((c) => c.name),
+    ...parsed.sideboard.map((c) => c.name),
   ]
   const { found, notFound } = await getCardsByNames(allNames)
 
@@ -77,6 +88,12 @@ export async function resolveDecklist(parsed: ParsedDecklist): Promise<ResolvedD
   for (const line of parsed.cards) {
     const card = found.get(line.name.toLowerCase())
     if (card) cards.push({ card, quantity: line.quantity })
+  }
+
+  const sideboard: DeckCard[] = []
+  for (const line of parsed.sideboard) {
+    const card = found.get(line.name.toLowerCase())
+    if (card) sideboard.push({ card, quantity: line.quantity })
   }
 
   let commanderId: string | undefined
@@ -90,7 +107,7 @@ export async function resolveDecklist(parsed: ParsedDecklist): Promise<ResolvedD
     }
   }
 
-  return { cards, commanderId, notFound }
+  return { cards, sideboard, commanderId, notFound }
 }
 
 export function serializeDecklistText(deck: FormatDeck, format: FormatDef): string {
@@ -110,6 +127,13 @@ export function serializeDecklistText(deck: FormatDeck, format: FormatDef): stri
     }
   }
 
+  if (deck.sideboard && deck.sideboard.length > 0) {
+    lines.push('', 'Sideboard')
+    for (const { card, quantity } of deck.sideboard) {
+      lines.push(`${quantity} ${card.name}`)
+    }
+  }
+
   return lines.join('\n')
 }
 
@@ -117,6 +141,7 @@ interface DeckJson {
   formatId: string
   commanderId?: string
   cards: Array<{ card: MtgCard; quantity: number }>
+  sideboard?: Array<{ card: MtgCard; quantity: number }>
 }
 
 export function serializeDecklistJson(deck: FormatDeck, formatId: string): string {
@@ -124,16 +149,23 @@ export function serializeDecklistJson(deck: FormatDeck, formatId: string): strin
     formatId,
     commanderId: deck.commanderId,
     cards: deck.cards,
+    sideboard: deck.sideboard,
   }
   return JSON.stringify(payload, null, 2)
 }
 
-export function parseDecklistJson(text: string): { formatId?: string; cards: DeckCard[]; commanderId?: string } {
+export function parseDecklistJson(text: string): {
+  formatId?: string
+  cards: DeckCard[]
+  sideboard: DeckCard[]
+  commanderId?: string
+} {
   const json = JSON.parse(text) as DeckJson
   if (!Array.isArray(json.cards)) throw new Error('Invalid deck JSON: missing cards array')
   return {
     formatId: json.formatId,
     commanderId: json.commanderId,
     cards: json.cards.map((dc) => ({ card: dc.card, quantity: dc.quantity })),
+    sideboard: (json.sideboard ?? []).map((dc) => ({ card: dc.card, quantity: dc.quantity })),
   }
 }

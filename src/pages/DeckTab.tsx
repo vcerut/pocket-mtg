@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { downloadTextFile } from '../lib/download'
 import {
@@ -11,26 +11,33 @@ import {
 import { getFormat } from '../lib/formats'
 import { deckCardWarnings } from '../lib/legality'
 import { useDeckStore } from '../store/deckStore'
+import type { MtgCard } from '../types/mtg'
 
 export function DeckTab() {
   const { formatId = '' } = useParams<{ formatId: string }>()
   const format = getFormat(formatId)
 
-  const deck = useDeckStore((s) => s.decks[formatId]) ?? { cards: [] }
+  const deck = useDeckStore((s) => s.decks[formatId]) ?? { cards: [], sideboard: [] }
+  const sideboard = deck.sideboard ?? []
   const setQuantity = useDeckStore((s) => s.setQuantity)
   const removeCard = useDeckStore((s) => s.removeCard)
   const setCommander = useDeckStore((s) => s.setCommander)
   const replaceDeck = useDeckStore((s) => s.replaceDeck)
+  const setSideboardQuantity = useDeckStore((s) => s.setSideboardQuantity)
+  const removeSideboardCard = useDeckStore((s) => s.removeSideboardCard)
+  const moveToSideboard = useDeckStore((s) => s.moveToSideboard)
+  const moveToMain = useDeckStore((s) => s.moveToMain)
 
   const [importText, setImportText] = useState('')
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [copied, setCopied] = useState(false)
 
   const cardCount = deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)
+  const sideboardCount = sideboard.reduce((sum, dc) => sum + dc.quantity, 0)
 
   function confirmOverwriteIfNeeded(): boolean {
-    if (deck.cards.length === 0) return true
+    if (deck.cards.length === 0 && sideboard.length === 0) return true
     return window.confirm(`Replace current ${format.label} deck with the imported list?`)
   }
 
@@ -42,7 +49,7 @@ export function DeckTab() {
     try {
       const parsed = parseDecklistText(importText)
       const resolved = await resolveDecklist(parsed)
-      replaceDeck(formatId, resolved.cards, resolved.commanderId)
+      replaceDeck(formatId, resolved.cards, resolved.commanderId, resolved.sideboard)
       if (resolved.notFound.length > 0) {
         setImportError(`Couldn't find: ${resolved.notFound.join(', ')}`)
       }
@@ -54,28 +61,34 @@ export function DeckTab() {
     }
   }
 
-  async function handleFileImport(file: File) {
-    const text = await file.text()
+  async function handlePasteFromClipboard() {
+    let text: string
+    try {
+      text = await navigator.clipboard.readText()
+    } catch {
+      setImportError("Couldn't read the clipboard. Check browser permissions and try again.")
+      return
+    }
+    if (!text.trim()) return
     if (!confirmOverwriteIfNeeded()) return
     setImporting(true)
     setImportError(null)
     try {
-      if (file.name.endsWith('.json')) {
+      try {
         const parsed = parseDecklistJson(text)
-        replaceDeck(formatId, parsed.cards, parsed.commanderId)
-      } else {
+        replaceDeck(formatId, parsed.cards, parsed.commanderId, parsed.sideboard)
+      } catch {
         const parsed = parseDecklistText(text)
         const resolved = await resolveDecklist(parsed)
-        replaceDeck(formatId, resolved.cards, resolved.commanderId)
+        replaceDeck(formatId, resolved.cards, resolved.commanderId, resolved.sideboard)
         if (resolved.notFound.length > 0) {
           setImportError(`Couldn't find: ${resolved.notFound.join(', ')}`)
         }
       }
     } catch {
-      setImportError('Import failed. Check the file format and try again.')
+      setImportError("Import failed. Check the clipboard content and try again.")
     } finally {
       setImporting(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
@@ -84,9 +97,15 @@ export function DeckTab() {
     downloadTextFile(`${format.id}-deck.txt`, text, 'text/plain')
   }
 
-  function handleExportJson() {
+  async function handleCopyToClipboard() {
     const json = serializeDecklistJson(deck, formatId)
-    downloadTextFile(`${format.id}-deck.json`, json, 'application/json')
+    try {
+      await navigator.clipboard.writeText(json)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setImportError("Couldn't write to the clipboard. Check browser permissions and try again.")
+    }
   }
 
   return (
@@ -115,38 +134,28 @@ export function DeckTab() {
           </button>
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={handlePasteFromClipboard}
             disabled={importing}
             className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
           >
-            Upload .txt / .json
+            Paste from clipboard
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".txt,.json"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              if (file) handleFileImport(file)
-            }}
-          />
           <span className="mx-1 h-5 w-px bg-neutral-800" />
           <button
             type="button"
             onClick={handleExportTxt}
-            disabled={deck.cards.length === 0}
+            disabled={deck.cards.length === 0 && sideboard.length === 0}
             className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
           >
             Export .txt
           </button>
           <button
             type="button"
-            onClick={handleExportJson}
-            disabled={deck.cards.length === 0}
+            onClick={handleCopyToClipboard}
+            disabled={deck.cards.length === 0 && sideboard.length === 0}
             className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm font-medium text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
           >
-            Export .json
+            {copied ? 'Copied!' : 'Copy to clipboard'}
           </button>
         </div>
         {importError && <p className="mt-2 text-sm text-amber-400">{importError}</p>}
@@ -162,58 +171,124 @@ export function DeckTab() {
         </p>
       ) : (
         <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
-          {deck.cards.map(({ card, quantity }) => {
-            const warnings = deckCardWarnings(card, quantity, format, deck)
-            const isCommander = deck.commanderId === card.id
-            return (
-              <li key={card.id} className="flex flex-col gap-1 px-4 py-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {format.hasCommander && (
-                      <button
-                        type="button"
-                        onClick={() => setCommander(formatId, isCommander ? undefined : card.id)}
-                        title={isCommander ? 'Unset commander' : 'Set as commander'}
-                        className={`text-lg ${isCommander ? 'text-amber-400' : 'text-neutral-600 hover:text-neutral-400'}`}
-                      >
-                        ★
-                      </button>
-                    )}
-                    <span className="text-white">{card.name}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setQuantity(formatId, card.id, quantity - 1)}
-                      className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                    >
-                      −
-                    </button>
-                    <span className="w-6 text-center text-neutral-300">{quantity}</span>
-                    <button
-                      type="button"
-                      onClick={() => setQuantity(formatId, card.id, quantity + 1)}
-                      className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                    >
-                      +
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => removeCard(formatId, card.id)}
-                      className="ml-2 text-sm text-neutral-500 hover:text-red-400"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                </div>
-                {warnings.length > 0 && (
-                  <p className="text-xs text-amber-400">{warnings.join(' · ')}</p>
-                )}
-              </li>
-            )
-          })}
+          {deck.cards.map(({ card, quantity }) => (
+            <DeckCardRow
+              key={card.id}
+              card={card}
+              quantity={quantity}
+              warnings={deckCardWarnings(card, quantity, format, deck)}
+              isCommander={format.hasCommander && deck.commanderId === card.id}
+              onToggleCommander={
+                format.hasCommander
+                  ? () => setCommander(formatId, deck.commanderId === card.id ? undefined : card.id)
+                  : undefined
+              }
+              onDecrement={() => setQuantity(formatId, card.id, quantity - 1)}
+              onIncrement={() => setQuantity(formatId, card.id, quantity + 1)}
+              onRemove={() => removeCard(formatId, card.id)}
+              onMove={{ label: '→ SB', onClick: () => moveToSideboard(formatId, card.id) }}
+            />
+          ))}
+        </ul>
+      )}
+
+      <h2 className="mb-2 mt-6 text-sm font-medium text-neutral-300">
+        Sideboard{sideboard.length > 0 ? ` (${sideboardCount})` : ''}
+      </h2>
+      {sideboard.length === 0 ? (
+        <p className="text-neutral-500">No sideboard cards.</p>
+      ) : (
+        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+          {sideboard.map(({ card, quantity }) => (
+            <DeckCardRow
+              key={card.id}
+              card={card}
+              quantity={quantity}
+              warnings={deckCardWarnings(card, quantity, format, deck)}
+              onDecrement={() => setSideboardQuantity(formatId, card.id, quantity - 1)}
+              onIncrement={() => setSideboardQuantity(formatId, card.id, quantity + 1)}
+              onRemove={() => removeSideboardCard(formatId, card.id)}
+              onMove={{ label: '→ Main', onClick: () => moveToMain(formatId, card.id) }}
+            />
+          ))}
         </ul>
       )}
     </div>
+  )
+}
+
+interface DeckCardRowProps {
+  card: MtgCard
+  quantity: number
+  warnings: string[]
+  isCommander?: boolean
+  onToggleCommander?: () => void
+  onDecrement: () => void
+  onIncrement: () => void
+  onRemove: () => void
+  onMove: { label: string; onClick: () => void }
+}
+
+function DeckCardRow({
+  card,
+  quantity,
+  warnings,
+  isCommander,
+  onToggleCommander,
+  onDecrement,
+  onIncrement,
+  onRemove,
+  onMove,
+}: DeckCardRowProps) {
+  return (
+    <li className="flex flex-col gap-1 px-4 py-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {onToggleCommander && (
+            <button
+              type="button"
+              onClick={onToggleCommander}
+              title={isCommander ? 'Unset commander' : 'Set as commander'}
+              className={`text-lg ${isCommander ? 'text-amber-400' : 'text-neutral-600 hover:text-neutral-400'}`}
+            >
+              ★
+            </button>
+          )}
+          <span className="text-white">{card.name}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onDecrement}
+            className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+          >
+            −
+          </button>
+          <span className="w-6 text-center text-neutral-300">{quantity}</span>
+          <button
+            type="button"
+            onClick={onIncrement}
+            className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            onClick={onMove.onClick}
+            className="ml-2 text-sm text-neutral-500 hover:text-neutral-300"
+          >
+            {onMove.label}
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-sm text-neutral-500 hover:text-red-400"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+      {warnings.length > 0 && <p className="text-xs text-amber-400">{warnings.join(' · ')}</p>}
+    </li>
   )
 }
