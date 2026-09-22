@@ -110,7 +110,7 @@ export function Search() {
               key={card.id}
               card={card}
               format={activeFormat}
-              onAdd={(c) => addCard(activeFormatId, c)}
+              onAdd={(c, quantity) => addCard(activeFormatId, c, quantity)}
             />
           ))}
         </div>

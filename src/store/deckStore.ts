@@ -14,7 +14,7 @@ interface DeckStore {
   setActiveFormat: (formatId: string) => void
   getDeck: (formatId: string) => FormatDeck
 
-  addCard: (formatId: string, card: MtgCard) => void
+  addCard: (formatId: string, card: MtgCard, quantity?: number) => void
   removeCard: (formatId: string, cardId: string) => void
   setQuantity: (formatId: string, cardId: string, quantity: number) => void
   setCommander: (formatId: string, cardId: string | undefined) => void
@@ -38,14 +38,14 @@ export const useDeckStore = create<DeckStore>()(
 
       getDeck: (formatId) => get().decks[formatId] ?? emptyDeck(),
 
-      addCard: (formatId, card) => {
+      addCard: (formatId, card, quantity = 1) => {
         const deck = get().decks[formatId] ?? emptyDeck()
         const existing = deck.cards.find((dc) => dc.card.id === card.id)
         const cards = existing
           ? deck.cards.map((dc) =>
-              dc.card.id === card.id ? { ...dc, quantity: dc.quantity + 1 } : dc,
+              dc.card.id === card.id ? { ...dc, quantity: dc.quantity + quantity } : dc,
             )
-          : [...deck.cards, { card, quantity: 1 }]
+          : [...deck.cards, { card, quantity }]
         set({ decks: { ...get().decks, [formatId]: { ...deck, cards } } })
       },
 
