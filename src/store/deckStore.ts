@@ -3,29 +3,41 @@ import { persist } from 'zustand/middleware'
 import { DEFAULT_FORMAT_ID } from '../lib/formats'
 import type { BracketFlags, DeckCard, FormatDeck, MtgCard } from '../types/mtg'
 
+export type Zone = 'main' | 'sideboard' | 'maybeboard'
+
 function emptyDeck(): FormatDeck {
-  return { cards: [], sideboard: [] }
+  return { cards: [], sideboard: [], maybeboard: [] }
 }
+
+function zoneCards(deck: FormatDeck, zone: Zone): DeckCard[] {
+  if (zone === 'main') return deck.cards
+  return deck[zone] ?? []
+}
+
+function withZoneCards(deck: FormatDeck, zone: Zone, cards: DeckCard[]): FormatDeck {
+  return zone === 'main' ? { ...deck, cards } : { ...deck, [zone]: cards }
+}
+
+export type DeckViewMode = 'text' | 'visual'
 
 interface DeckStore {
   activeFormatId: string
   decks: Record<string, FormatDeck>
+  viewMode: DeckViewMode
 
   setActiveFormat: (formatId: string) => void
   getDeck: (formatId: string) => FormatDeck
+  setViewMode: (mode: DeckViewMode) => void
 
   addCard: (formatId: string, card: MtgCard, quantity?: number) => void
-  removeCard: (formatId: string, cardId: string) => void
-  setQuantity: (formatId: string, cardId: string, quantity: number) => void
   setCommander: (formatId: string, cardId: string | undefined) => void
   setBracketFlags: (formatId: string, flags: BracketFlags) => void
   replaceDeck: (formatId: string, cards: DeckCard[], commanderId?: string, sideboard?: DeckCard[]) => void
   clearDeck: (formatId: string) => void
 
-  removeSideboardCard: (formatId: string, cardId: string) => void
-  setSideboardQuantity: (formatId: string, cardId: string, quantity: number) => void
-  moveToSideboard: (formatId: string, cardId: string) => void
-  moveToMain: (formatId: string, cardId: string) => void
+  setZoneQuantity: (formatId: string, zone: Zone, cardId: string, quantity: number) => void
+  removeFromZone: (formatId: string, zone: Zone, cardId: string) => void
+  moveCard: (formatId: string, cardId: string, to: Zone) => void
 }
 
 export const useDeckStore = create<DeckStore>()(
@@ -33,10 +45,13 @@ export const useDeckStore = create<DeckStore>()(
     (set, get) => ({
       activeFormatId: DEFAULT_FORMAT_ID,
       decks: {},
+      viewMode: 'text',
 
       setActiveFormat: (formatId) => set({ activeFormatId: formatId }),
 
       getDeck: (formatId) => get().decks[formatId] ?? emptyDeck(),
+
+      setViewMode: (mode) => set({ viewMode: mode }),
 
       addCard: (formatId, card, quantity = 1) => {
         const deck = get().decks[formatId] ?? emptyDeck()
@@ -46,27 +61,6 @@ export const useDeckStore = create<DeckStore>()(
               dc.card.id === card.id ? { ...dc, quantity: dc.quantity + quantity } : dc,
             )
           : [...deck.cards, { card, quantity }]
-        set({ decks: { ...get().decks, [formatId]: { ...deck, cards } } })
-      },
-
-      removeCard: (formatId, cardId) => {
-        const deck = get().decks[formatId] ?? emptyDeck()
-        const cards = deck.cards.filter((dc) => dc.card.id !== cardId)
-        const commanderId = deck.commanderId === cardId ? undefined : deck.commanderId
-        set({ decks: { ...get().decks, [formatId]: { ...deck, cards, commanderId } } })
-      },
-
-      setQuantity: (formatId, cardId, quantity) => {
-        const deck = get().decks[formatId] ?? emptyDeck()
-        if (quantity <= 0) {
-          const cards = deck.cards.filter((dc) => dc.card.id !== cardId)
-          const commanderId = deck.commanderId === cardId ? undefined : deck.commanderId
-          set({ decks: { ...get().decks, [formatId]: { ...deck, cards, commanderId } } })
-          return
-        }
-        const cards = deck.cards.map((dc) =>
-          dc.card.id === cardId ? { ...dc, quantity } : dc,
-        )
         set({ decks: { ...get().decks, [formatId]: { ...deck, cards } } })
       },
 
@@ -81,59 +75,61 @@ export const useDeckStore = create<DeckStore>()(
       },
 
       replaceDeck: (formatId, cards, commanderId, sideboard = []) => {
-        set({ decks: { ...get().decks, [formatId]: { cards, commanderId, sideboard } } })
+        const deck = get().decks[formatId] ?? emptyDeck()
+        set({
+          decks: {
+            ...get().decks,
+            [formatId]: { ...deck, cards, commanderId, sideboard },
+          },
+        })
       },
 
       clearDeck: (formatId) => {
         set({ decks: { ...get().decks, [formatId]: emptyDeck() } })
       },
 
-      removeSideboardCard: (formatId, cardId) => {
+      setZoneQuantity: (formatId, zone, cardId, quantity) => {
         const deck = get().decks[formatId] ?? emptyDeck()
-        const sideboard = (deck.sideboard ?? []).filter((dc) => dc.card.id !== cardId)
-        set({ decks: { ...get().decks, [formatId]: { ...deck, sideboard } } })
-      },
-
-      setSideboardQuantity: (formatId, cardId, quantity) => {
-        const deck = get().decks[formatId] ?? emptyDeck()
+        const list = zoneCards(deck, zone)
         if (quantity <= 0) {
-          const sideboard = (deck.sideboard ?? []).filter((dc) => dc.card.id !== cardId)
-          set({ decks: { ...get().decks, [formatId]: { ...deck, sideboard } } })
+          const commanderId = zone === 'main' && deck.commanderId === cardId ? undefined : deck.commanderId
+          set({
+            decks: {
+              ...get().decks,
+              [formatId]: { ...withZoneCards(deck, zone, list.filter((dc) => dc.card.id !== cardId)), commanderId },
+            },
+          })
           return
         }
-        const sideboard = (deck.sideboard ?? []).map((dc) =>
-          dc.card.id === cardId ? { ...dc, quantity } : dc,
-        )
-        set({ decks: { ...get().decks, [formatId]: { ...deck, sideboard } } })
+        const updated = list.map((dc) => (dc.card.id === cardId ? { ...dc, quantity } : dc))
+        set({ decks: { ...get().decks, [formatId]: withZoneCards(deck, zone, updated) } })
       },
 
-      moveToSideboard: (formatId, cardId) => {
-        const deck = get().decks[formatId] ?? emptyDeck()
-        const moved = deck.cards.find((dc) => dc.card.id === cardId)
-        if (!moved) return
-        const cards = deck.cards.filter((dc) => dc.card.id !== cardId)
-        const commanderId = deck.commanderId === cardId ? undefined : deck.commanderId
-        const existing = (deck.sideboard ?? []).find((dc) => dc.card.id === cardId)
-        const sideboard = existing
-          ? (deck.sideboard ?? []).map((dc) =>
-              dc.card.id === cardId ? { ...dc, quantity: dc.quantity + moved.quantity } : dc,
-            )
-          : [...(deck.sideboard ?? []), moved]
-        set({ decks: { ...get().decks, [formatId]: { ...deck, cards, commanderId, sideboard } } })
+      removeFromZone: (formatId, zone, cardId) => {
+        get().setZoneQuantity(formatId, zone, cardId, 0)
       },
 
-      moveToMain: (formatId, cardId) => {
+      moveCard: (formatId, cardId, to) => {
         const deck = get().decks[formatId] ?? emptyDeck()
-        const moved = (deck.sideboard ?? []).find((dc) => dc.card.id === cardId)
-        if (!moved) return
-        const sideboard = (deck.sideboard ?? []).filter((dc) => dc.card.id !== cardId)
-        const existing = deck.cards.find((dc) => dc.card.id === cardId)
-        const cards = existing
-          ? deck.cards.map((dc) =>
-              dc.card.id === cardId ? { ...dc, quantity: dc.quantity + moved.quantity } : dc,
-            )
-          : [...deck.cards, moved]
-        set({ decks: { ...get().decks, [formatId]: { ...deck, cards, sideboard } } })
+        const zones: Zone[] = ['main', 'sideboard', 'maybeboard']
+        const from = zones.find((z) => zoneCards(deck, z).some((dc) => dc.card.id === cardId))
+        if (!from || from === to) return
+
+        const moved = zoneCards(deck, from).find((dc) => dc.card.id === cardId)!
+        const sourceList = zoneCards(deck, from).filter((dc) => dc.card.id !== cardId)
+        const targetList = zoneCards(deck, to)
+        const existing = targetList.find((dc) => dc.card.id === cardId)
+        const updatedTarget = existing
+          ? targetList.map((dc) => (dc.card.id === cardId ? { ...dc, quantity: dc.quantity + moved.quantity } : dc))
+          : [...targetList, moved]
+
+        let next = withZoneCards(deck, from, sourceList)
+        next = withZoneCards(next, to, updatedTarget)
+        if (from === 'main' && next.commanderId === cardId) {
+          next = { ...next, commanderId: undefined }
+        }
+
+        set({ decks: { ...get().decks, [formatId]: next } })
       },
     }),
     { name: 'pocket-mtg-decks-v2' },

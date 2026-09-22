@@ -1,40 +1,119 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
+import { cardImageUrl } from '../api/scryfall'
+import { groupCardsForDeckView } from '../lib/deckGrouping'
 import { downloadTextFile } from '../lib/download'
 import {
   parseDecklistJson,
   parseDecklistText,
   resolveDecklist,
-  serializeDecklistJson,
   serializeDecklistText,
 } from '../lib/decklist'
 import { getFormat } from '../lib/formats'
-import { deckCardWarnings } from '../lib/legality'
-import { useDeckStore } from '../store/deckStore'
-import type { MtgCard } from '../types/mtg'
+import { cardLegality, deckCardWarnings, legalityLabel } from '../lib/legality'
+import { useDeckStore, type DeckViewMode, type Zone } from '../store/deckStore'
+import type { DeckCard, MtgCard } from '../types/mtg'
+import type { FormatDef } from '../lib/formats'
+
+const ZONE_LABELS: Record<Zone, string> = { main: 'Main', sideboard: 'Sideboard', maybeboard: 'Maybeboard' }
+const ALL_ZONES: Zone[] = ['main', 'sideboard', 'maybeboard']
+
+interface MoveTarget {
+  label: string
+  onClick: () => void
+}
+
+const AUTO_SCROLL_EDGE = 96 // px from the top/bottom of the viewport that triggers scrolling
+const AUTO_SCROLL_MAX_SPEED = 18 // px per animation frame right at the edge
+
+/** Scrolls the page while a native HTML5 drag is near the top/bottom of the viewport,
+ * since browsers don't do this automatically for custom drop targets. */
+function useAutoScrollWhileDragging() {
+  const dragClientY = useRef<number | null>(null)
+  const isDragging = useRef(false)
+
+  useEffect(() => {
+    function handleDragOver(e: DragEvent) {
+      dragClientY.current = e.clientY
+    }
+    function handleDragStart() {
+      isDragging.current = true
+    }
+    function handleDragEnd() {
+      isDragging.current = false
+      dragClientY.current = null
+    }
+    function handleWheel(e: WheelEvent) {
+      if (!isDragging.current) return
+      e.preventDefault()
+      window.scrollBy(0, e.deltaY)
+    }
+
+    let rafId: number
+    function tick() {
+      if (isDragging.current && dragClientY.current !== null) {
+        const y = dragClientY.current
+        const viewportHeight = window.innerHeight
+        if (y < AUTO_SCROLL_EDGE) {
+          window.scrollBy(0, -AUTO_SCROLL_MAX_SPEED * (1 - y / AUTO_SCROLL_EDGE))
+        } else if (y > viewportHeight - AUTO_SCROLL_EDGE) {
+          window.scrollBy(0, AUTO_SCROLL_MAX_SPEED * (1 - (viewportHeight - y) / AUTO_SCROLL_EDGE))
+        }
+      }
+      rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+
+    window.addEventListener('dragover', handleDragOver)
+    window.addEventListener('dragstart', handleDragStart)
+    window.addEventListener('dragend', handleDragEnd)
+    window.addEventListener('drop', handleDragEnd)
+    window.addEventListener('wheel', handleWheel, { passive: false })
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      window.removeEventListener('dragover', handleDragOver)
+      window.removeEventListener('dragstart', handleDragStart)
+      window.removeEventListener('dragend', handleDragEnd)
+      window.removeEventListener('drop', handleDragEnd)
+      window.removeEventListener('wheel', handleWheel)
+    }
+  }, [])
+}
 
 export function DeckTab() {
   const { formatId = '' } = useParams<{ formatId: string }>()
   const format = getFormat(formatId)
 
-  const deck = useDeckStore((s) => s.decks[formatId]) ?? { cards: [], sideboard: [] }
+  const deck = useDeckStore((s) => s.decks[formatId]) ?? { cards: [], sideboard: [], maybeboard: [] }
   const sideboard = deck.sideboard ?? []
-  const setQuantity = useDeckStore((s) => s.setQuantity)
-  const removeCard = useDeckStore((s) => s.removeCard)
+  const maybeboard = deck.maybeboard ?? []
+  const viewMode = useDeckStore((s) => s.viewMode)
+  const setViewMode = useDeckStore((s) => s.setViewMode)
   const setCommander = useDeckStore((s) => s.setCommander)
   const replaceDeck = useDeckStore((s) => s.replaceDeck)
-  const setSideboardQuantity = useDeckStore((s) => s.setSideboardQuantity)
-  const removeSideboardCard = useDeckStore((s) => s.removeSideboardCard)
-  const moveToSideboard = useDeckStore((s) => s.moveToSideboard)
-  const moveToMain = useDeckStore((s) => s.moveToMain)
+  const setZoneQuantity = useDeckStore((s) => s.setZoneQuantity)
+  const removeFromZone = useDeckStore((s) => s.removeFromZone)
+  const moveCard = useDeckStore((s) => s.moveCard)
 
   const [importText, setImportText] = useState('')
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [dragOverZone, setDragOverZone] = useState<Zone | null>(null)
+
+  useAutoScrollWhileDragging()
 
   const cardCount = deck.cards.reduce((sum, dc) => sum + dc.quantity, 0)
   const sideboardCount = sideboard.reduce((sum, dc) => sum + dc.quantity, 0)
+  const maybeboardCount = maybeboard.reduce((sum, dc) => sum + dc.quantity, 0)
+
+  function moveTargetsFor(zone: Zone, cardId: string): MoveTarget[] {
+    return ALL_ZONES.filter((z) => z !== zone).map((z) => ({
+      label: `→ ${ZONE_LABELS[z]}`,
+      onClick: () => moveCard(formatId, cardId, z),
+    }))
+  }
 
   function confirmOverwriteIfNeeded(): boolean {
     if (deck.cards.length === 0 && sideboard.length === 0) return true
@@ -98,14 +177,94 @@ export function DeckTab() {
   }
 
   async function handleCopyToClipboard() {
-    const json = serializeDecklistJson(deck, formatId)
+    const text = serializeDecklistText(deck, format)
     try {
-      await navigator.clipboard.writeText(json)
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
       setImportError("Couldn't write to the clipboard. Check browser permissions and try again.")
     }
+  }
+
+  function renderZoneSection(zone: Zone, cards: DeckCard[], emptyText: string) {
+    const groups = groupCardsForDeckView(cards)
+    return (
+      <div
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOverZone(zone)
+        }}
+        onDragLeave={() => setDragOverZone((current) => (current === zone ? null : current))}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOverZone(null)
+          const cardId = e.dataTransfer.getData('text/plain')
+          if (cardId) moveCard(formatId, cardId, zone)
+        }}
+        className={`rounded-md p-1 transition-colors ${
+          dragOverZone === zone ? 'bg-violet-950/30 ring-2 ring-violet-500' : ''
+        }`}
+      >
+        {groups.length === 0 ? (
+          <p className="text-neutral-500">{emptyText}</p>
+        ) : (
+          groups.map((group) => (
+            <div key={group.category} className="mb-4 last:mb-0">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+                {group.category} · {group.cards.reduce((sum, dc) => sum + dc.quantity, 0)}
+              </h3>
+              {viewMode === 'text' ? (
+                <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+                  {group.cards.map(({ card, quantity }) => (
+                    <DeckCardRow
+                      key={card.id}
+                      card={card}
+                      quantity={quantity}
+                      warnings={deckCardWarnings(card, quantity, format, deck)}
+                      isCommander={zone === 'main' && format.hasCommander && deck.commanderId === card.id}
+                      onToggleCommander={
+                        zone === 'main' && format.hasCommander
+                          ? () => setCommander(formatId, deck.commanderId === card.id ? undefined : card.id)
+                          : undefined
+                      }
+                      onDecrement={() => setZoneQuantity(formatId, zone, card.id, quantity - 1)}
+                      onIncrement={() => setZoneQuantity(formatId, zone, card.id, quantity + 1)}
+                      onRemove={() => removeFromZone(formatId, zone, card.id)}
+                      moveTargets={moveTargetsFor(zone, card.id)}
+                      onDragStart={(e) => e.dataTransfer.setData('text/plain', card.id)}
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                  {group.cards.map(({ card, quantity }) => (
+                    <DeckCardVisual
+                      key={card.id}
+                      card={card}
+                      format={format}
+                      quantity={quantity}
+                      warnings={deckCardWarnings(card, quantity, format, deck)}
+                      isCommander={zone === 'main' && format.hasCommander && deck.commanderId === card.id}
+                      onToggleCommander={
+                        zone === 'main' && format.hasCommander
+                          ? () => setCommander(formatId, deck.commanderId === card.id ? undefined : card.id)
+                          : undefined
+                      }
+                      onDecrement={() => setZoneQuantity(formatId, zone, card.id, quantity - 1)}
+                      onIncrement={() => setZoneQuantity(formatId, zone, card.id, quantity + 1)}
+                      onRemove={() => removeFromZone(formatId, zone, card.id)}
+                      moveTargets={moveTargetsFor(zone, card.id)}
+                      onDragStart={(e) => e.dataTransfer.setData('text/plain', card.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    )
   }
 
   return (
@@ -161,63 +320,59 @@ export function DeckTab() {
         {importError && <p className="mt-2 text-sm text-amber-400">{importError}</p>}
       </div>
 
-      <p className="mb-2 text-sm text-neutral-400">
-        {cardCount} card{cardCount === 1 ? '' : 's'}
-      </p>
+      <div className="mb-4 flex items-center justify-end">
+        <div className="flex items-center gap-0.5 rounded-md border border-neutral-700 p-0.5">
+          <ViewModeButton mode="text" current={viewMode} onClick={setViewMode}>
+            Text
+          </ViewModeButton>
+          <ViewModeButton mode="visual" current={viewMode} onClick={setViewMode}>
+            Images
+          </ViewModeButton>
+        </div>
+      </div>
 
-      {deck.cards.length === 0 ? (
-        <p className="text-neutral-500">
-          No cards yet. Go to Search to add some, or import a decklist above.
-        </p>
-      ) : (
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
-          {deck.cards.map(({ card, quantity }) => (
-            <DeckCardRow
-              key={card.id}
-              card={card}
-              quantity={quantity}
-              warnings={deckCardWarnings(card, quantity, format, deck)}
-              isCommander={format.hasCommander && deck.commanderId === card.id}
-              onToggleCommander={
-                format.hasCommander
-                  ? () => setCommander(formatId, deck.commanderId === card.id ? undefined : card.id)
-                  : undefined
-              }
-              onDecrement={() => setQuantity(formatId, card.id, quantity - 1)}
-              onIncrement={() => setQuantity(formatId, card.id, quantity + 1)}
-              onRemove={() => removeCard(formatId, card.id)}
-              onMove={{ label: '→ SB', onClick: () => moveToSideboard(formatId, card.id) }}
-            />
-          ))}
-        </ul>
-      )}
+      <h2 className="mb-2 text-sm font-medium text-neutral-300">Main deck ({cardCount})</h2>
+      {renderZoneSection('main', deck.cards, 'No cards yet. Go to Search to add some, or import a decklist above.')}
 
-      <h2 className="mb-2 mt-6 text-sm font-medium text-neutral-300">
-        Sideboard{sideboard.length > 0 ? ` (${sideboardCount})` : ''}
-      </h2>
-      {sideboard.length === 0 ? (
-        <p className="text-neutral-500">No sideboard cards.</p>
-      ) : (
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
-          {sideboard.map(({ card, quantity }) => (
-            <DeckCardRow
-              key={card.id}
-              card={card}
-              quantity={quantity}
-              warnings={deckCardWarnings(card, quantity, format, deck)}
-              onDecrement={() => setSideboardQuantity(formatId, card.id, quantity - 1)}
-              onIncrement={() => setSideboardQuantity(formatId, card.id, quantity + 1)}
-              onRemove={() => removeSideboardCard(formatId, card.id)}
-              onMove={{ label: '→ Main', onClick: () => moveToMain(formatId, card.id) }}
-            />
-          ))}
-        </ul>
+      <h2 className="mb-2 mt-6 text-sm font-medium text-neutral-300">Sideboard ({sideboardCount})</h2>
+      {renderZoneSection('sideboard', sideboard, 'No sideboard cards.')}
+
+      <h2 className="mb-2 mt-6 text-sm font-medium text-neutral-300">Maybeboard ({maybeboardCount})</h2>
+      {renderZoneSection(
+        'maybeboard',
+        maybeboard,
+        'No maybeboard cards. Drag cards here to park ideas outside the deck.',
       )}
     </div>
   )
 }
 
-interface DeckCardRowProps {
+function ViewModeButton({
+  mode,
+  current,
+  onClick,
+  children,
+}: {
+  mode: DeckViewMode
+  current: DeckViewMode
+  onClick: (mode: DeckViewMode) => void
+  children: React.ReactNode
+}) {
+  const active = mode === current
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(mode)}
+      className={`rounded px-3 py-1 text-sm font-medium ${
+        active ? 'bg-violet-600 text-white' : 'text-neutral-400 hover:text-neutral-200'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+interface CardControlsProps {
   card: MtgCard
   quantity: number
   warnings: string[]
@@ -226,7 +381,8 @@ interface DeckCardRowProps {
   onDecrement: () => void
   onIncrement: () => void
   onRemove: () => void
-  onMove: { label: string; onClick: () => void }
+  moveTargets: MoveTarget[]
+  onDragStart: (e: React.DragEvent<HTMLElement>) => void
 }
 
 function DeckCardRow({
@@ -238,10 +394,15 @@ function DeckCardRow({
   onDecrement,
   onIncrement,
   onRemove,
-  onMove,
-}: DeckCardRowProps) {
+  moveTargets,
+  onDragStart,
+}: CardControlsProps) {
   return (
-    <li className="flex flex-col gap-1 px-4 py-2">
+    <li
+      draggable
+      onDragStart={onDragStart}
+      className="flex cursor-grab flex-col gap-1 px-4 py-2 active:cursor-grabbing"
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {onToggleCommander && (
@@ -272,13 +433,16 @@ function DeckCardRow({
           >
             +
           </button>
-          <button
-            type="button"
-            onClick={onMove.onClick}
-            className="ml-2 text-sm text-neutral-500 hover:text-neutral-300"
-          >
-            {onMove.label}
-          </button>
+          {moveTargets.map((target) => (
+            <button
+              key={target.label}
+              type="button"
+              onClick={target.onClick}
+              className="ml-1 text-sm text-neutral-500 hover:text-neutral-300"
+            >
+              {target.label}
+            </button>
+          ))}
           <button
             type="button"
             onClick={onRemove}
@@ -290,5 +454,99 @@ function DeckCardRow({
       </div>
       {warnings.length > 0 && <p className="text-xs text-amber-400">{warnings.join(' · ')}</p>}
     </li>
+  )
+}
+
+function DeckCardVisual({
+  card,
+  format,
+  quantity,
+  warnings,
+  isCommander,
+  onToggleCommander,
+  onDecrement,
+  onIncrement,
+  onRemove,
+  moveTargets,
+  onDragStart,
+}: CardControlsProps & { format: FormatDef }) {
+  const image = cardImageUrl(card)
+  const badge = legalityLabel(cardLegality(card, format))
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        draggable
+        onDragStart={onDragStart}
+        className="group relative cursor-grab overflow-hidden rounded-lg border border-neutral-800 bg-neutral-900 active:cursor-grabbing"
+      >
+        {image ? (
+          <img src={image} alt={card.name} className="w-full" loading="lazy" />
+        ) : (
+          <div className="flex aspect-5/7 items-center justify-center p-2 text-center text-sm text-neutral-400">
+            {card.name}
+          </div>
+        )}
+        <span className="absolute left-1 top-1 rounded-full bg-neutral-950/90 px-1.5 py-0.5 text-xs font-semibold text-white">
+          ×{quantity}
+        </span>
+        {badge && (
+          <span className="absolute right-1 top-1 rounded-full bg-red-900/90 px-1.5 py-0.5 text-[10px] font-medium text-red-200">
+            {badge}
+          </span>
+        )}
+        {onToggleCommander && (
+          <button
+            type="button"
+            onClick={onToggleCommander}
+            title={isCommander ? 'Unset commander' : 'Set as commander'}
+            className={`absolute bottom-1 left-1 text-lg ${
+              isCommander ? 'text-amber-400' : 'text-neutral-400 opacity-0 group-hover:opacity-100'
+            }`}
+          >
+            ★
+          </button>
+        )}
+        <div className="absolute inset-x-1 bottom-1 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          <div className="flex items-center justify-between rounded-full bg-neutral-950/90 px-1 py-0.5">
+            <button
+              type="button"
+              onClick={onDecrement}
+              className="flex h-5 w-5 items-center justify-center rounded-full text-white hover:bg-neutral-800"
+            >
+              −
+            </button>
+            <span className="text-xs text-white">{quantity}</span>
+            <button
+              type="button"
+              onClick={onIncrement}
+              className="flex h-5 w-5 items-center justify-center rounded-full text-white hover:bg-neutral-800"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              onClick={onRemove}
+              className="text-xs text-neutral-300 hover:text-red-400"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex gap-1">
+            {moveTargets.map((target) => (
+              <button
+                key={target.label}
+                type="button"
+                onClick={target.onClick}
+                className="flex-1 rounded-full bg-neutral-950/90 px-1 py-0.5 text-[10px] text-neutral-200 hover:bg-neutral-800"
+              >
+                {target.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {warnings.length > 0 && <p className="text-[11px] text-amber-400">{warnings.join(' · ')}</p>}
+    </div>
   )
 }

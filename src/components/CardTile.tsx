@@ -20,7 +20,7 @@ export function CardTile({ card, format, onAdd }: CardTileProps) {
       {image ? (
         <img src={image} alt={card.name} className="w-full" loading="lazy" />
       ) : (
-        <div className="flex aspect-[5/7] items-center justify-center p-2 text-center text-sm text-neutral-400">
+        <div className="flex aspect-5/7 items-center justify-center p-2 text-center text-sm text-neutral-400">
           {card.name}
         </div>
       )}

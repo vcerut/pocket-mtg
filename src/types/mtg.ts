@@ -44,6 +44,7 @@ export interface BracketFlags {
 export interface FormatDeck {
   cards: DeckCard[]
   sideboard?: DeckCard[]
+  maybeboard?: DeckCard[]
   commanderId?: string
   bracketFlags?: BracketFlags
 }
