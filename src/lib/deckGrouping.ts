@@ -23,18 +23,20 @@ const CATEGORY_ORDER: DeckCategory[] = [
 
 /**
  * Single-category classification for the deck-view grouping. A card with
- * multiple types (e.g. "Artifact Creature") lands in whichever of its types
- * comes first in CATEGORY_ORDER, so creature-ness always wins.
+ * multiple types (e.g. "Artifact Creature") lands in a single category: lands and
+ * creatures take precedence, then the order of the checks below.
  */
 export function deckCardCategory(card: MtgCard): DeckCategory {
   const frontFace = card.type_line.split('//')[0]
 
+  // Lands and creatures win over every other type, so e.g. an Artifact Land is a Land
+  // and an Artifact Creature is a Creature.
+  if (/\bLand\b/.test(frontFace)) return /\bBasic\b/.test(frontFace) ? 'Basic Land' : 'Land'
   if (/\bCreature\b/.test(frontFace)) return 'Creature'
   if (/\bInstant\b/.test(frontFace)) return 'Instant'
   if (/\bSorcery\b/.test(frontFace)) return 'Sorcery'
   if (/\bArtifact\b/.test(frontFace)) return 'Artifact'
   if (/\bEnchantment\b/.test(frontFace)) return 'Enchantment'
-  if (/\bLand\b/.test(frontFace)) return /\bBasic\b/.test(frontFace) ? 'Basic Land' : 'Land'
   return 'Other'
 }
 

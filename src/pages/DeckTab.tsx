@@ -10,6 +10,7 @@ import {
   serializeDecklistText,
 } from '../lib/decklist'
 import { getFormat } from '../lib/formats'
+import { COLOR_CHIPS, COLOR_SWATCH, TYPE_CHIPS } from '../lib/searchQuery'
 import { cardLegality, deckCardWarnings, legalityLabel } from '../lib/legality'
 import { useDeckStore, type DeckViewMode, type Zone } from '../store/deckStore'
 import type { DeckCard, MtgCard } from '../types/mtg'
@@ -21,6 +22,32 @@ const ALL_ZONES: Zone[] = ['main', 'sideboard', 'maybeboard']
 interface MoveTarget {
   label: string
   onClick: () => void
+}
+
+const MANA_VALUES = [0, 1, 2, 3, 4, 5, 6, 7] // 7 means "7+"
+
+interface DeckFilters {
+  colors: string[]
+  types: string[]
+  manaValues: number[]
+}
+
+const EMPTY_DECK_FILTERS: DeckFilters = { colors: [], types: [], manaValues: [] }
+
+function toggleIn<T>(list: T[], value: T): T[] {
+  return list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
+}
+
+/** Within each filter group any selected value matches (OR); groups combine with AND. */
+function matchesDeckFilters(card: MtgCard, f: DeckFilters): boolean {
+  if (f.colors.length > 0) {
+    const colors = card.colors ?? card.color_identity ?? []
+    const cardColors = colors.length === 0 ? ['c'] : colors.map((c) => c.toLowerCase())
+    if (!f.colors.some((c) => cardColors.includes(c))) return false
+  }
+  if (f.types.length > 0 && !f.types.some((t) => new RegExp(`\\b${t}\\b`).test(card.type_line))) return false
+  if (f.manaValues.length > 0 && !f.manaValues.includes(Math.min(Math.floor(card.cmc), 7))) return false
+  return true
 }
 
 const AUTO_SCROLL_EDGE = 96 // px from the top/bottom of the viewport that triggers scrolling
@@ -100,6 +127,10 @@ export function DeckTab() {
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [filterText, setFilterText] = useState('')
+  const [filters, setFilters] = useState<DeckFilters>(EMPTY_DECK_FILTERS)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filtersActive = filters.colors.length + filters.types.length + filters.manaValues.length > 0
   const [dragOverZone, setDragOverZone] = useState<Zone | null>(null)
 
   useAutoScrollWhileDragging()
@@ -188,7 +219,17 @@ export function DeckTab() {
   }
 
   function renderZoneSection(zone: Zone, cards: DeckCard[], emptyText: string) {
-    const groups = groupCardsForDeckView(cards)
+    const needle = filterText.trim().toLowerCase()
+    const visibleCards =
+      needle || filtersActive
+        ? cards.filter(
+            ({ card }) =>
+              matchesDeckFilters(card, filters) &&
+              (!needle ||
+                [card.name, card.type_line, card.oracle_text ?? ''].some((f) => f.toLowerCase().includes(needle))),
+          )
+        : cards
+    const groups = groupCardsForDeckView(visibleCards)
     return (
       <div
         onDragOver={(e) => {
@@ -207,7 +248,7 @@ export function DeckTab() {
         }`}
       >
         {groups.length === 0 ? (
-          <p className="text-neutral-500">{emptyText}</p>
+          <p className="text-neutral-500">{(needle || filtersActive) && cards.length > 0 ? 'No cards match your search.' : emptyText}</p>
         ) : (
           <div className={viewMode === 'visual' ? 'flex flex-wrap items-start gap-x-6 gap-y-4' : viewMode === 'text' ? 'gap-x-8 md:columns-2 xl:columns-3' : ''}>
           {groups.map((group) => (
@@ -325,7 +366,36 @@ export function DeckTab() {
         {importError && <p className="mt-2 text-sm text-amber-400">{importError}</p>}
       </div>
 
-      <div className="mb-4 flex items-center justify-end">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex w-full max-w-md items-center gap-2">
+          <input
+            type="search"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Search in deck (name, type, text)…"
+            className="w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-white placeholder-neutral-600 focus:border-violet-500 focus:outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => setFiltersOpen(true)}
+            title="Filters"
+            aria-label="Filters"
+            className={`relative flex h-8 w-9 shrink-0 items-center justify-center rounded-md border ${
+              filtersActive
+                ? 'border-violet-500 text-violet-300'
+                : 'border-neutral-700 text-neutral-400 hover:text-neutral-200'
+            }`}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M4 6h16M7 12h10M10 18h4" />
+            </svg>
+            {filtersActive && (
+              <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-violet-600 px-1 text-[10px] font-semibold text-white">
+                {filters.colors.length + filters.types.length + filters.manaValues.length}
+              </span>
+            )}
+          </button>
+        </div>
         <div className="flex items-center gap-0.5 rounded-md border border-neutral-700 p-0.5">
           <ViewModeButton mode="text" current={viewMode} onClick={setViewMode}>
             List
@@ -351,7 +421,155 @@ export function DeckTab() {
         maybeboard,
         'No maybeboard cards. Drag cards here to park ideas outside the deck.',
       )}
+      {filtersOpen && (
+        <FiltersModal
+          filters={filters}
+          onChange={setFilters}
+          onClose={() => setFiltersOpen(false)}
+        />
+      )}
     </div>
+  )
+}
+
+function FiltersModal({
+  filters,
+  onChange,
+  onClose,
+}: {
+  filters: DeckFilters
+  onChange: (filters: DeckFilters) => void
+  onClose: () => void
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const active = filters.colors.length + filters.types.length + filters.manaValues.length > 0
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div role="dialog" aria-label="Filters" className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-900 shadow-2xl">
+        <div className="flex items-center justify-between border-b border-neutral-800 px-5 py-3">
+          <h2 className="text-sm font-semibold text-white">Filters</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-neutral-500 hover:text-white">
+            ✕
+          </button>
+        </div>
+
+        <div className="divide-y divide-neutral-800">
+          <ModalSection title="Color">
+            <div className="flex flex-wrap gap-2">
+              {COLOR_CHIPS.map(({ code, label }) => {
+                const on = filters.colors.includes(code)
+                return (
+                  <button
+                    key={code}
+                    type="button"
+                    title={label}
+                    onClick={() => onChange({ ...filters, colors: toggleIn(filters.colors, code) })}
+                    className={`flex h-8 w-8 items-center justify-center rounded-full border-2 text-xs font-bold text-neutral-900 ${
+                      on ? 'border-white' : 'border-transparent opacity-50 hover:opacity-90'
+                    }`}
+                    style={{ background: COLOR_SWATCH[code] }}
+                  >
+                    {code.toUpperCase()}
+                  </button>
+                )
+              })}
+            </div>
+          </ModalSection>
+
+          <ModalSection title="Card type">
+            <div className="flex flex-wrap gap-1.5">
+              {TYPE_CHIPS.map((type) => (
+                <FilterChip
+                  key={type}
+                  active={filters.types.includes(type)}
+                  onClick={() => onChange({ ...filters, types: toggleIn(filters.types, type) })}
+                >
+                  {type}
+                </FilterChip>
+              ))}
+            </div>
+          </ModalSection>
+
+          <ModalSection title="Mana value">
+            <div className="flex flex-wrap gap-1.5">
+              {MANA_VALUES.map((mv) => (
+                <FilterChip
+                  key={mv}
+                  active={filters.manaValues.includes(mv)}
+                  onClick={() => onChange({ ...filters, manaValues: toggleIn(filters.manaValues, mv) })}
+                >
+                  {mv === 7 ? '7+' : mv}
+                </FilterChip>
+              ))}
+            </div>
+          </ModalSection>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-neutral-800 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => onChange(EMPTY_DECK_FILTERS)}
+            disabled={!active}
+            className="text-sm text-neutral-400 hover:text-white disabled:opacity-40"
+          >
+            Reset
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-violet-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-violet-500"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ModalSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="px-5 py-4">
+      <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-neutral-500">{title}</h3>
+      {children}
+    </div>
+  )
+}
+
+function FilterChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-sm ${
+        active
+          ? 'border-violet-500 bg-violet-600 text-white'
+          : 'border-neutral-700 text-neutral-400 hover:text-neutral-200'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 

@@ -68,6 +68,9 @@ export function primaryType(card: { type_line: string }): string {
   const frontFace = card.type_line.split('//')[0]
   const typesPart = frontFace.split('—')[0].trim()
   const words = typesPart.split(/\s+/).filter(Boolean)
+  // Artifact/Enchantment lands and creatures count as lands and creatures.
+  if (words.includes('Land')) return 'Land'
+  if (words.includes('Creature')) return 'Creature'
   return words.find((w) => !SUPERTYPES.has(w)) ?? words[0] ?? 'Other'
 }
 
