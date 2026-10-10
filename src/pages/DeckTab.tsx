@@ -209,13 +209,14 @@ export function DeckTab() {
         {groups.length === 0 ? (
           <p className="text-neutral-500">{emptyText}</p>
         ) : (
-          groups.map((group) => (
-            <div key={group.category} className="mb-4 last:mb-0">
+          <div className={viewMode === 'visual' ? 'flex flex-wrap items-start gap-x-6 gap-y-4' : viewMode === 'text' ? 'gap-x-8 md:columns-2 xl:columns-3' : ''}>
+          {groups.map((group) => (
+            <div key={group.category} className={viewMode === 'visual' ? 'w-56' : viewMode === 'text' ? 'mb-4 break-inside-avoid' : 'mb-4 last:mb-0'}>
               <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
                 {group.category} · {group.cards.reduce((sum, dc) => sum + dc.quantity, 0)}
               </h3>
               {viewMode === 'text' ? (
-                <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800 bg-neutral-900">
+                <ul className="divide-y divide-neutral-800/60">
                   {group.cards.map(({ card, quantity }) => (
                     <DeckCardRow
                       key={card.id}
@@ -237,9 +238,11 @@ export function DeckTab() {
                   ))}
                 </ul>
               ) : (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                  {group.cards.map(({ card, quantity }) => (
-                    <DeckCardVisual
+                <div className={viewMode === 'full' ? 'grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4' : 'flex flex-col rounded-lg'}>
+                  {group.cards.map(({ card, quantity }) => {
+                    const Visual = viewMode === 'full' ? DeckCardFull : DeckCardVisual
+                    return (
+                    <Visual
                       key={card.id}
                       card={card}
                       format={format}
@@ -257,11 +260,13 @@ export function DeckTab() {
                       moveTargets={moveTargetsFor(zone, card.id)}
                       onDragStart={(e) => e.dataTransfer.setData('text/plain', card.id)}
                     />
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
-          ))
+          ))}
+          </div>
         )}
       </div>
     )
@@ -323,10 +328,13 @@ export function DeckTab() {
       <div className="mb-4 flex items-center justify-end">
         <div className="flex items-center gap-0.5 rounded-md border border-neutral-700 p-0.5">
           <ViewModeButton mode="text" current={viewMode} onClick={setViewMode}>
-            Text
+            List
           </ViewModeButton>
           <ViewModeButton mode="visual" current={viewMode} onClick={setViewMode}>
-            Images
+            Compact
+          </ViewModeButton>
+          <ViewModeButton mode="full" current={viewMode} onClick={setViewMode}>
+            Full
           </ViewModeButton>
         </div>
       </div>
@@ -397,67 +405,177 @@ function DeckCardRow({
   moveTargets,
   onDragStart,
 }: CardControlsProps) {
+  const { previewHandlers, previewImage } = useCardPreview(card)
+
   return (
     <li
       draggable
       onDragStart={onDragStart}
-      className="flex cursor-grab flex-col gap-1 px-4 py-2 active:cursor-grabbing"
+      {...previewHandlers}
+      className="group flex cursor-grab items-center gap-2 px-1 py-0.5 text-sm hover:bg-neutral-800/60 active:cursor-grabbing"
     >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {onToggleCommander && (
-            <button
-              type="button"
-              onClick={onToggleCommander}
-              title={isCommander ? 'Unset commander' : 'Set as commander'}
-              className={`text-lg ${isCommander ? 'text-amber-400' : 'text-neutral-600 hover:text-neutral-400'}`}
-            >
-              ★
-            </button>
-          )}
-          <span className="text-white">{card.name}</span>
-        </div>
-        <div className="flex items-center gap-2">
+      <span className="w-5 shrink-0 text-right text-neutral-400">{quantity}</span>
+      <span className="min-w-0 flex-1 truncate text-white">
+        {isCommander && <span className="mr-1 text-amber-400">★</span>}
+        {card.name}
+      </span>
+      {warnings.length > 0 && (
+        <span title={warnings.join(' · ')} className="shrink-0 text-amber-400">
+          ⚠
+        </span>
+      )}
+      <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
+        {onToggleCommander && (
           <button
             type="button"
-            onClick={onDecrement}
-            className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+            onClick={onToggleCommander}
+            title={isCommander ? 'Unset commander' : 'Set as commander'}
+            className={isCommander ? 'text-amber-400' : 'text-neutral-500 hover:text-neutral-300'}
           >
-            −
+            ★
           </button>
-          <span className="w-6 text-center text-neutral-300">{quantity}</span>
+        )}
+        <button type="button" onClick={onDecrement} className="h-5 w-5 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700">
+          −
+        </button>
+        <button type="button" onClick={onIncrement} className="h-5 w-5 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700">
+          +
+        </button>
+        {moveTargets.map((target) => (
           <button
+            key={target.label}
             type="button"
-            onClick={onIncrement}
-            className="h-6 w-6 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+            onClick={target.onClick}
+            className="text-xs text-neutral-500 hover:text-neutral-300"
           >
-            +
+            {target.label.replace('→ ', '→')}
           </button>
-          {moveTargets.map((target) => (
-            <button
-              key={target.label}
-              type="button"
-              onClick={target.onClick}
-              className="ml-1 text-sm text-neutral-500 hover:text-neutral-300"
-            >
-              {target.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={onRemove}
-            className="text-sm text-neutral-500 hover:text-red-400"
-          >
-            Remove
-          </button>
-        </div>
+        ))}
+        <button type="button" onClick={onRemove} className="text-xs text-neutral-500 hover:text-red-400">
+          ✕
+        </button>
       </div>
-      {warnings.length > 0 && <p className="text-xs text-amber-400">{warnings.join(' · ')}</p>}
+      {previewImage}
     </li>
   )
 }
 
+const PREVIEW_WIDTH = 260
+const PREVIEW_HEIGHT = 363
+
+/** Hover handlers plus a floating full-card image, placed beside the hovered element. */
+function useCardPreview(card: MtgCard) {
+  const image = cardImageUrl(card)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
+
+  const previewHandlers = {
+    onMouseEnter: (e: React.MouseEvent<HTMLElement>) => {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const fitsRight = rect.right + 8 + PREVIEW_WIDTH <= window.innerWidth
+      const left = fitsRight ? rect.right + 8 : Math.max(8, rect.left - 8 - PREVIEW_WIDTH)
+      const top = Math.min(Math.max(8, rect.top - 40), window.innerHeight - PREVIEW_HEIGHT - 8)
+      setPos({ left, top })
+    },
+    onMouseLeave: () => setPos(null),
+  }
+
+  const previewImage =
+    pos && image ? (
+      <img
+        src={image}
+        alt=""
+        style={{ position: 'fixed', left: pos.left, top: pos.top, width: PREVIEW_WIDTH }}
+        className="pointer-events-none z-50 rounded-xl shadow-2xl shadow-black"
+      />
+    ) : null
+
+  return { previewHandlers, previewImage, hidePreview: () => setPos(null) }
+}
+
 function DeckCardVisual({
+  card,
+  format,
+  quantity,
+  warnings,
+  isCommander,
+  onToggleCommander,
+  onDecrement,
+  onIncrement,
+  onRemove,
+  moveTargets,
+  onDragStart,
+}: CardControlsProps & { format: FormatDef }) {
+  const image = cardImageUrl(card)
+  const badge = legalityLabel(cardLegality(card, format))
+  const { previewHandlers, previewImage, hidePreview } = useCardPreview(card)
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => {
+        hidePreview()
+        onDragStart(e)
+      }}
+      {...previewHandlers}
+      className="group relative -mb-px h-[30px] shrink-0 cursor-grab overflow-hidden rounded-t-lg border border-neutral-700 bg-neutral-900 active:cursor-grabbing"
+    >
+      {image ? (
+        <img src={image} alt={card.name} className="w-full" loading="lazy" draggable={false} />
+      ) : (
+        <div className="px-2 py-1 text-sm text-neutral-200">{card.name}</div>
+      )}
+      {warnings.length > 0 && (
+        <span title={warnings.join(' · ')} className="absolute left-1 top-1 text-amber-400">
+          ⚠
+        </span>
+      )}
+      {badge && (
+        <span className="absolute right-8 top-1 rounded-full bg-red-900/90 px-1.5 text-[10px] font-medium text-red-200">
+          {badge}
+        </span>
+      )}
+      <span className="absolute right-1 top-1 rounded-full bg-neutral-950/90 px-1.5 text-xs font-semibold text-white group-hover:opacity-0">
+        ×{quantity}
+      </span>
+      <div className="absolute inset-y-0 right-0 hidden items-center gap-1 bg-neutral-950/90 pl-2 pr-1 group-hover:flex">
+        {onToggleCommander && (
+          <button
+            type="button"
+            onClick={onToggleCommander}
+            title={isCommander ? 'Unset commander' : 'Set as commander'}
+            className={isCommander ? 'text-amber-400' : 'text-neutral-400 hover:text-neutral-200'}
+          >
+            ★
+          </button>
+        )}
+        <button type="button" onClick={onDecrement} className="px-1 text-white hover:bg-neutral-800">
+          −
+        </button>
+        <span className="text-xs text-white">{quantity}</span>
+        <button type="button" onClick={onIncrement} className="px-1 text-white hover:bg-neutral-800">
+          +
+        </button>
+        {moveTargets.map((target) => (
+          <button
+            key={target.label}
+            type="button"
+            onClick={target.onClick}
+            title={target.label}
+            className="text-[10px] text-neutral-300 hover:text-white"
+          >
+            {target.label.replace('→ ', '→')}
+          </button>
+        ))}
+        <button type="button" onClick={onRemove} className="text-xs text-neutral-300 hover:text-red-400">
+          ✕
+        </button>
+      </div>
+      {previewImage}
+    </div>
+  )
+}
+
+function DeckCardFull({
   card,
   format,
   quantity,

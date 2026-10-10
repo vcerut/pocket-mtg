@@ -40,7 +40,13 @@ export function parseDecklistText(text: string): ParsedDecklist {
 
   for (const raw of lines) {
     if (!raw) continue
-    const lower = raw.toLowerCase()
+    // Tolerate headers like `// SIDEBOARD`, `# Sideboard`, `Sideboard:` or `Sideboard (15)`.
+    const lower = raw
+      .toLowerCase()
+      .replace(/^(\/\/|#)\s*/, '')
+      .replace(/\s*\(\d+\)\s*$/, '')
+      .replace(/:$/, '')
+      .trim()
     if (lower === 'commander') {
       section = 'commander'
       continue
@@ -49,7 +55,7 @@ export function parseDecklistText(text: string): ParsedDecklist {
       section = 'deck'
       continue
     }
-    if (lower === 'sideboard') {
+    if (lower === 'sideboard' || lower === 'side') {
       section = 'sideboard'
       continue
     }

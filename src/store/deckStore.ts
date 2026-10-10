@@ -18,7 +18,7 @@ function withZoneCards(deck: FormatDeck, zone: Zone, cards: DeckCard[]): FormatD
   return zone === 'main' ? { ...deck, cards } : { ...deck, [zone]: cards }
 }
 
-export type DeckViewMode = 'text' | 'visual'
+export type DeckViewMode = 'text' | 'visual' | 'full'
 
 interface DeckStore {
   activeFormatId: string
